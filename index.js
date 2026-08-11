@@ -29,10 +29,27 @@ app.post("/get-ans", async (req, res) => {
 
     const response = await ai.models.generateContent({
         model: "gemini-3.6-flash",
-        contents: data.prompt
+        contents: [
+            {
+                role: "user",
+                parts: [
+                    {
+                        text: data.prompt
+                    }
+                ]
+            }
+        ],
+
+        config: {
+            systemInstruction:
+                "You are a helpful assistant and your name is David."
+        }
     })
     console.log(response.text);
-    res.status(200).json({ message: "Request received successfully" });
+    res.status(200).json({
+        message: "Request received successfully",
+        answer: response.text
+    });
 })
 
 app.listen(PORT, () => {
