@@ -2,7 +2,9 @@ import express from "express";
 import dotenv from "dotenv";
 import { GoogleGenAI } from "@google/genai";
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai"
-import { Annotation, StateGraph, START, END } from "@langchain/langgraph";
+import { Annotation, MemorySaver, MessagesAnnotation, StateGraph } from "@langchain/langgraph";
+import { ToolNode } from "@langchain/langgraph/prebuilt";
+import { TavilySearch } from "@langchain/tavily";
 
 dotenv.config();
 
@@ -58,13 +60,23 @@ app.use(express.json());
 
 
 //--------LANG-CHAIN-----------------
+const tool = new TavilySearch({
+    maxResults: 5,
+    topic: "general",
+});
+
+const checkPointer = new MemorySaver()
+
+
+const tools = [tool]
+const toolNode = new ToolNode(tools)
 
 const llm = new ChatGoogleGenerativeAI({
     model: "gemini-3.6-flash",
     temperature: 0,
     maxRetries: 2,
     // other params...
-})
+}).bindTools(tools)
 
 // app.post("/get-ans", async (req, res) => {
 //     const data = req.body;
@@ -77,42 +89,67 @@ const llm = new ChatGoogleGenerativeAI({
 // })
 //----------LANG-graph-----------------
 
-const State = Annotation.Root({
-    prompt: Annotation,
-    aiMsg: Annotation,
-});
 
 const callLLM = async (state) => {
+    console.log("state:", state)
+
     const response = await llm.invoke([
         {
             role: "system",
-            content: "you are a assistent and your name is chakarbangru . if you dont know answer then dont give icorrect answer"
-        },
-        {
-            role: "human",
-            content: state.prompt
-        }
-    ]);
-    return { aiMsg: response.content }
+            content: `You are Chakarbangru AI assistant
 
+Use conversation memory first.
+
+Only use tools when the answer requires
+external real-time information like:
+weather, news, web search, stock prices etc.
+
+Do NOT call tools for simple conversation,
+memory-based questions, greetings,
+or personal context`
+        },
+        ...state.messages
+    ])
+
+    return { messages: [response] }
 }
 
-const graph = new StateGraph(State)
+const shouldContinue = async (state) => {
+    const lastMessage = state.messages[state.messages.length - 1]
+    if (lastMessage.tool_calls.length > 0) {
+        return "tools"
+    } else {
+        return "__end__"
+    }
+}
+
+const graph = new StateGraph(MessagesAnnotation)
     .addNode("agent", callLLM)
+    .addNode("tools", toolNode)
     .addEdge("__start__", "agent")
-    .addEdge("agent", "__end__")
-    .compile()
+    .addEdge("tools", "agent")
+    .addConditionalEdges("agent", shouldContinue)
+    .compile({ checkpointer: checkPointer })
 
 
 app.post("/get-ans", async (req, res) => {
 
     const { input } = req.body
-    const response = await graph.invoke({ prompt: input })
-    console.log(response)
+    const response = await graph.invoke(
+        {
+            messages: [
+                {
+                    role: "user",
+                    content: input
+                }
+            ]
+        },
+        { configurable: { thread_id: "user123" } }
 
-    return res.status(200).json({
-        "ai": response.aiMsg
-    })
+    )
+    console.log(response.messages)
+
+    return res.status(200).json({ "ai:": response.messages[response.messages.length - 1].content })
 })
 
 
